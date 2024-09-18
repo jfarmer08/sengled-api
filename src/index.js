@@ -15,19 +15,26 @@ class SengledApi {
         this.persistPath = options.persistPath;
         this.apiLogEnabled = true;
 
-        this.authBaseUrl = 'https://ucenter.cloud.sengled.com/user/app/customer'
-        this.apiBaseUrl = 'https://element.cloud.sengled.com/zigbee/device'
+
+        // User login parameters
         this.username = options.username;
         this.password = options.password;
         this.countryCode = options.country || 'us';
         this.wifi = options.wifi || false;
-        this.access_token = "";
+
+        // URLs
+        this.authBaseUrl = 'https://ucenter.cloud.sengled.com/user/app/customer'
+        this.apiBaseUrl = 'https://element.cloud.sengled.com/zigbee/device'
+         
+ 
         this.mqtt_server = { host: "us-mqtt.cloud.sengled.com", port: 443, path: "/mqtt" };
         this.mqttServerURL = ""
-        this.mqtt_client = null;
+
         this.subscribe = {};
-        this.devices = [];
-        this.wifi_devices = []
+        this.mqtt_client = null;
+
+
+        this.access_token = "";
 
         this.log.info("Sengled Api initializing.");
     }
@@ -252,12 +259,64 @@ class SengledApi {
         }
     }
 
+    async isSessionTimout() {
+        this.maybeLogin()
+
+        const result = await this.request('https://ucenter.cloud.sengled.com/user/app/customer/isSessionTimeout.json');
+
+        return result.data;
+    }
+
+    async getServerInfo() {
+        try {
+            // Ensure the user is logged in
+            await this.maybeLogin();
+    
+            // Send request to get server info
+            const result = await this.request('https://life2.cloud.sengled.com/life2/server/getServerInfo.json');
+    
+            // Log server info response data
+            this.log.debug("SengledApi: Get MQTT Server Info - " + JSON.stringify(result.data));
+    
+            // Check if inceptionAddr is available
+            if (!result.data.inceptionAddr) {
+                this.log.debug("SengledApi: No inceptionAddr found in the response.");
+                return;
+            }
+    
+            // Parse the URL and extract host and port
+            const parsedUrl = new URL(result.data.inceptionAddr);
+            const [host, port] = parsedUrl.host.split(":");
+    
+            // Assign values to the mqtt_server object
+            this.mqtt_server.host = host;
+            this.mqtt_server.port = port ? parseInt(port, 10) : 443;
+            this.mqtt_server.path = parsedUrl.pathname;
+    
+            // Log the parsed MQTT server information
+            this.log.debug("SengledApi: Parse MQTT Server Info - " + parsedUrl.toString());
+    
+        } catch (error) {
+            // Catch and log any errors
+            this.log.error("SengledApi: Failed to get or parse MQTT Server Info - " + error.message);
+        }
+    }
+    
+    async getWifiObjectList() {
+        this.maybeLogin()
+
+        const result = await this.request('https://life2.cloud.sengled.com/life2/device/list.json');
+
+        return result.data.deviceList;
+    }
+
     async getObjectList() {
+        this.maybeLogin()
+
         const result = await this.request("getDeviceDetails.json");
 
         return result.data.deviceInfos;
     }
-
 
     async getDeviceList() {
         const devices = []
@@ -289,24 +348,21 @@ class SengledApi {
         return matchingDevices; // return all matching devices, can be an empty array if none found
     }
 
-    async setBrightness(deviceUuid, friendlyName, brightness, wifiDevice) {
-        const brightnessPercentage = Math.round((brightness / 255) * 100);
-        const timestamp = Date.now();
-        const data = {
-            dn: deviceUuid,
-            type: 'brightness',
-            value: brightnessPercentage.toString(),
-            time: timestamp,
-        };
-    
-        const logMessage = `Bulb ${friendlyName} setting brightness to ${brightnessPercentage}%`;
-    
+    async setBrightness(deviceUuid, friendlyName, brightness, wifiDevice = false) {
         if (wifiDevice) {
             this.log.info(`SengledApi: Wi-Fi Bulb ${friendlyName} setting brightness to ${brightnessPercentage}%`);
+
+            const data = {
+                dn: deviceUuid,
+                type: 'brightness',
+                value: calculateBrightnessPercentage(brightness).toString(),
+                time: Date.now(),
+            };
             const topic = `wifielement/${deviceUuid}/update`;
-            this.publish_mqtt(topic, JSON.stringify(data));
+            this.publishMqtt(topic, JSON.stringify(data));
         } else {
-            this.log.info(logMessage);
+            this.log.info(`Bulb ${friendlyName} setting brightness to ${brightnessPercentage}%`);
+
             const url = `https://${this.countryCode}-elements.cloud.sengled.com/zigbee/device/deviceSetBrightness.json`;
             const payload = { deviceUuid, brightness };
             try {
@@ -317,36 +373,282 @@ class SengledApi {
         }
     }
 
-    async async_toggle(deviceUuid, friendlyName, onoff, wifiDevice) {
+    async setColorTemperature(deviceUuid, friendlyName, colorTemperature, wifiDevice = false) {
+
+        const colorTemperaturePercentage = Math.round(
+          this.translate(parseInt(colorTemperature), 200, 6500, 1, 100)
+        );
+    
+        if (wifiDevice) {
+          this.log.info(
+            `SengledApi: Wifi Color Bulb ${friendlyName} ${deviceUuid} Set Color Temperature ${colorTemperaturePercentage}, This is what we are setting Sengled API`
+          );
+    
+          const dataColorTemperature = {
+            dn: deviceUuid,
+            type: 'colorTemperature',
+            value: String(colorTemperaturePercentage),
+            time: Date.now(),
+          };
+    
+          this.publishMqtt(`wifielement/${deviceUuid}/update`, JSON.stringify(dataColorTemperature));
+        } else {
+          this.log.info(`Bulb ${friendlyName} ${deviceUuid} Set Color Temperature ${colorTemperaturePercentage}`);
+    
+          const url = `https://${this.countryCode}-elements.cloud.sengled.com/zigbee/device/deviceSetColorTemperature.json`;
+          const payload = {
+            deviceUuid: deviceUuid,
+            colorTemperature: colorTemperaturePercentage,
+          };
+    
+          try {
+            await this.request(url, payload);
+            } catch (error) {
+                this.log.error(`Failed to set color Temperature for Zigbee Bulb ${friendlyName}: ${error.message}`);
+            }
+        }
+      }
+
+    async setColor(deviceUuid, friendlyName, color, wifiDevice = false) {
+
+    if (wifiDevice) {
+        const dataColor = {
+        dn: deviceUuid,
+        type: 'color',
+        value: this.convertColorHA(color),
+        time: Date.now(),
+        };
+
+        this.publishMqtt(`wifielement/${deviceUuid}/update`, JSON.stringify(dataColor));
+    } else {
+        this.log.info(`SengledApi: Color Bulb ${friendlyName} ${deviceUuid} Setting Color`);
+
+        const colorStr = color
+        .toString()
+        .replace(/\s|\(|\)/g, '')
+        .split(',');
+        const [r, g, b] = colorStr.map(Number);
+
+        this.log.info(`SengledApi: Set Color R ${r} G ${g} B ${b}`);
+
+        const url = `https://${this.countryCode}-elements.cloud.sengled.com/zigbee/device/deviceSetGroup.json`;
+        const payload = {
+        cmdId: 129,
+        deviceUuidList: [{ deviceUuid: deviceUuid }],
+        rgbColorR: r,
+        rgbColorG: g,
+        rgbColorB: b,
+        };
+
+        try {
+        await this.request(url, payload);
+        } catch (error) {
+            this.log.error(`Failed to set color for Zigbee Bulb ${friendlyName}: ${error.message}`);
+        }
+        }
+    }
+
+    async setPower(deviceUuid, friendlyName, onoff, wifiDevice = false) {
         // Set internal state based on on/off value
         this._state = onoff === '1';
         const isOn = this._state ? 'on' : 'off';
-    
+
         const data = {
             dn: deviceUuid,
             type: 'switch',
             value: onoff === '1' ? '1' : '0',
             time: Date.now(),
         };
-    
+
         const logMessage = `SengledApi: Bulb ${friendlyName} ${deviceUuid} turning ${isOn}.`;
-    
+
         if (wifiDevice) {
             this.log.info(logMessage);
             const topic = `wifielement/${deviceUuid}/update`;
-            this.publish_mqtt(topic, JSON.stringify(data));
+            this.publishMqtt(topic, JSON.stringify(data));
         } else {
             this.log.info(`SengledApi: Zigbee Bulb ${friendlyName} toggling.`);
             const url = `https://${this.countryCode}-elements.cloud.sengled.com/zigbee/device/deviceSetOnOff.json`;
             const payload = { deviceUuid, onoff };
-    
+
             try {
                 await this.request(url, payload);
             } catch (error) {
                 this.log.error(`Failed to toggle Zigbee Bulb ${friendlyName}: ${error.message}`);
             }
         }
-    } 
+    }
+
+    initializeMqtt() {
+        this.log.info("SengledApi: Initialize the MQTT connection");
+
+        this.maybeLogin()
+
+        const onMessage = (topic, message) => {
+            if (this.subscribe[topic]) {
+                this.subscribe[topic](message)
+            }
+        };
+
+        this.mqtt_client = mqtt.connect(`wss://${this.mqtt_server.host}:${this.mqtt_server.port}`, {
+            clientId: `${this.access_token}@lifeApp`,
+            protocol: 'wss',
+            wsOptions: {
+                path: this.mqtt_server.path,
+                headers: {
+                    'Cookie': `JSESSIONID=${this.access_token}`,
+                    'X-Requested-With': 'com.sengled.life2',
+                }
+            }
+        });
+
+        this.mqtt_client.on('message', onMessage);
+        this.mqtt_client.on('connect', () => {
+            this.log.info("SengledApi: Connected to MQTT broker");
+        });
+
+        this.mqtt_client.on('error', (err) => {
+            this.log.error("SengledApi: MQTT error", err);
+        });
+
+        this.mqtt_client.subscribe(Object.keys(this.subscribe));
+        this.log.info("SengledApi: Start mqtt loop");
+        return true;
+    }
+
+    reinitializeMqtt() {
+        this.log.info("SengledApi: Re-initialize the MQTT connection");
+
+        if (!this.mqtt_client || !this.access_token) {
+            return false;
+        }
+
+        this.mqtt_client.end(true, () => {
+            this.mqtt_client = mqtt.connect(`wss://${this.mqtt_server.host}:${this.mqtt_server.port}`, {
+                clientId: `${this.access_token}@lifeApp`,
+                protocol: 'wss',
+                wsOptions: {
+                    path: this.mqtt_server.path,
+                    headers: {
+                        'Cookie': `JSESSIONID=${this.access_token}`
+                    }
+                }
+            });
+
+            this.mqtt_client.on('message', (topic, message) => {
+                if (this.subscribe[topic]) {
+                    this.subscribe[topic](message);
+                }
+            });
+
+            for (const topic in this.subscribe) {
+                this.subscribeMqtt(topic, this.subscribe[topic]);
+            }
+
+            this.log.info("SengledApi: MQTT reinitialized");
+        });
+
+        return true;
+    }
+
+    publishMqtt(topic, payload = null) {
+        this.log.info("SengledApi: Publish MQTT message");
+
+        if (!this.mqtt_client) {
+            return false;
+        }
+
+        const result = this.mqtt_client.publish(topic, payload);
+
+        result.on('error', (err) => {
+            this.log.error("SengledApi: Error publishing MQTT message", err);
+        });
+
+        result.on('publish', () => {
+            this.log.info("SengledApi: Message published successfully");
+        });
+
+        return true;
+    }
+
+    subscribeMqtt(topic, callback) {
+        this.log.info(`SengledApi: Subscribe to MQTT Topic ${topic}`);
+
+        if (!this.mqtt_client) {
+            return false;
+        }
+
+        this.mqtt_client.subscribe(topic, (err) => {
+            if (err) {
+                this.log.error("SengledApi: Error subscribing to topic", err);
+                return false;
+            }
+            this.subscribe[topic] = callback;
+            this.log.info(`SengledApi: Subscribed to ${topic}`);
+        });
+
+        return true;
+    }
+
+    unsubscribeMqtt(topic) {
+        this.log.info(`SengledApi: Unsubscribe from MQTT Topic ${topic}`);
+
+        if (this.subscribe[topic]) {
+            this.mqtt_client.unsubscribe(topic, (err) => {
+                if (err) {
+                    this.log.error(`SengledApi: Error unsubscribing from ${topic}`, err);
+                    return false;
+                }
+                delete this.subscribe[topic];
+                this.log.info(`SengledApi: Unsubscribed from ${topic}`);
+            });
+        }
+        return true;
+    }
+
+    //Turn Light Bulb 0 = off or 1 = on
+    async lightPower(deviceUuid, friendlyName, value) {
+        await this.setPower(deviceUuid, friendlyName, value);
+    }
+    async lightTurnOn(deviceUuid, friendlyName) {
+        await this.setProperty(deviceUuid, friendlyName, "0");
+    }
+    async lightTurnOff(deviceUuid, friendlyName) {
+        await this.setProperty(deviceUuid, friendlyName, "1");
+    }
+    
+    // Turn Light Bulb 0 = off or 1 = on
+    async wifiLightPower(deviceUuid, friendlyName, value) {
+        await this.setPower(deviceUuid, friendlyName, value, true);
+    }
+    async wifiLightTurnOn(deviceUuid, friendlyName) {
+        await this.setProperty(deviceUuid, friendlyName, "0", true);
+    }
+    async wifiLightTurnOff(deviceUuid, friendlyName) {
+        await this.setProperty(deviceUuid, friendlyName, "1", true);
+    }
+
+    //This function takes a brightness value (between 0 and 255) as input and returns the brightness percentage (between 0% and 100%). 
+    //You can use it for different brightness values depending on your needs.
+    calculateBrightnessPercentage(brightness) {
+        return Math.round((brightness / 255) * 100);
+    }
+
+    // Function to translate a value from one range to another
+    translate(value, fromLow, fromHigh, toLow, toHigh) {
+        return (value - fromLow) * (toHigh - toLow) / (fromHigh - fromLow) + toLow;
+    }
+
+    convertColorHA(HACOLOR) {
+        let sengledColor = HACOLOR.toString();
+        const replacements = [[" ", ""], [",", ":"], ["(", ""], [")", ""]];
+      
+        replacements.forEach(([from, to]) => {
+          sengledColor = sengledColor.replace(new RegExp(from, 'g'), to);
+        });
+      
+        return sengledColor;
+      }
 }
 
 module.exports = SengledApi;
