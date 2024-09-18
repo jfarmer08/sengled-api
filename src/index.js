@@ -199,7 +199,7 @@ class SengledApi {
                 this.lastLoginAttempt = now;
                 await this.login();
             } else {
-                this.log.warning(
+                this.log.error(
                     "Attempting to login before debounce has cleared, waiting " +
                     this.loginAttemptDebounceMilliseconds / 1000 +
                     " seconds"
@@ -302,6 +302,13 @@ class SengledApi {
         }
     }
     
+    async getAllObjectsList() {
+        if(this.wifi) {
+            this.getWifiObjectList()
+            this.getObjectList()
+        } else this.getObjectList()
+    }
+
     async getWifiObjectList() {
         this.maybeLogin()
 
