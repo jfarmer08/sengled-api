@@ -87,23 +87,21 @@ class SengledApi {
             ...config,
         };
 
-        if (this.apiLogEnabled) this.log.debug(`Performing request: ${url}`);
-        if (this.apiLogEnabled)
-            this.log.debug(`Request config: ${JSON.stringify(config)}`);
+        this.log.debug(`Performing request: ${url}`);
+
+        this.log.debug(`Request config: ${JSON.stringify(config)}`);
 
         let result;
 
         try {
             result = await axios(config);
-            if (this.apiLogEnabled)
+            this.log.debug(
+                `API response PerformRequest: ${JSON.stringify(result.data)}`
+            );
+            if (this.dumpData) {
                 this.log.debug(
                     `API response PerformRequest: ${JSON.stringify(result.data)}`
                 );
-            if (this.dumpData) {
-                if (this.apiLogEnabled)
-                    this.log.debug(
-                        `API response PerformRequest: ${JSON.stringify(result.data)}`
-                    );
                 this.dumpData = false; // Only want to do this once at start-up
             }
         } catch (e) {
@@ -157,8 +155,7 @@ class SengledApi {
         try {
             // Will need to add more to this to see if an issues 
             result = await this._performLoginRequest();
-            if (this.apiLogEnabled)
-                this.log.debug("Successfully logged into Sengled API");
+            this.log.debug("Successfully logged into Sengled API");
             await this._updateTokens(result.data.jsessionId);
         } catch (error) {
             throw new Error(
@@ -175,7 +172,6 @@ class SengledApi {
         if (!this.access_token) {
             let now = new Date().getTime();
             // check if the last login attempt occurred too recently
-            if (this.apiLogEnabled)
                 this.log.debug(
                     "Last login " +
                     this.lastLoginAttempt +
@@ -236,7 +232,6 @@ class SengledApi {
     }
 
     _tokenPersistPath() {
-        // const uuid = 'test'
         const uuid = getUuid(this.username);
         return path.join(this.persistPath, `sengled-${uuid}.json`);
     }
@@ -301,20 +296,13 @@ class SengledApi {
             this.log.error("SengledApi: Failed to get or parse MQTT Server Info - " + error.message);
         }
     }
-    
-    async getAllObjectsList() {
-        if(this.wifi) {
-            this.getWifiObjectList()
-            this.getObjectList()
-        } else this.getObjectList()
-    }
 
     async getWifiObjectList() {
         this.maybeLogin()
 
         const result = await this.request('https://life2.cloud.sengled.com/life2/device/list.json');
 
-        return result.data.deviceList;
+        return result.data;
     }
 
     async getObjectList() {
@@ -336,6 +324,65 @@ class SengledApi {
 
         return devices;
     }
+
+    async getWifiDeviceList() {
+        const result = await this.getWifiObjectList();
+
+        return result.deviceList
+    }
+
+    async getAllDeviceList() {
+        // Helper function to transform the original device data
+        const transformData = (original) => {
+            return original.map(device => {
+                // Create a new attributes object from the attributeList
+                const attributes = device.attributeList.reduce((acc, attr) => {
+                    acc[attr.name] = attr.value;
+                    return acc;
+                }, {});
+    
+                // Return the transformed device object
+                return {
+                    deviceUuid: device.deviceUuid,
+                    deviceClass: 1, // Default class, adjust if necessary
+                    supportAttributes: attributes.supportAttributes || "",
+                    attributes: {
+                        deviceRssi: attributes.deviceRssi,
+                        productCode: attributes.productCode,
+                        brightness: attributes.brightness,
+                        activeTime: attributes.startTime,
+                        name: attributes.name,
+                        colorMode: attributes.colorMode,
+                        isOnline: attributes.online,
+                        version: attributes.version,
+                        onCount: "0", // Placeholder; update if needed
+                        typeCode: attributes.typeCode,
+                        onoff: attributes.switch
+                    }
+                };
+            });
+        };
+    
+        try {
+            const deviceList = await this.getDeviceList();  // Get the device list
+    
+            if (!this.wifi) {
+                // If wifi is not enabled, return the device list early
+                return deviceList;
+            }
+    
+            // If wifi is enabled, get wifi device list and combine arrays
+            const wifiDeviceList = await this.getWifiDeviceList();
+            const transformedWifiDevices = transformData(wifiDeviceList);
+            
+            // Combine the device list with transformed wifi devices
+            return deviceList.concat(transformedWifiDevices);
+            
+        } catch (error) {
+            console.error("Error fetching device lists:", error);
+            throw error;  // Propagate error to handle it properly in the calling function
+        }
+    }    
 
     async findDeviceByUuid(targetUuid) {
         const devices = await this.getDeviceList();
