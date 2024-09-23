@@ -14,7 +14,6 @@
     "author": "Allen Farmer",
     "license": "MIT",
     "dependencies": {
-        "@ptkdev/logger": "1.8.0",
         "axios": "1.7.7",
         "mqtt": "5.10.1",
         "uuid": "10.0.0",
