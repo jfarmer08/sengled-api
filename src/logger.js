@@ -1,5 +1,4 @@
 const path = require('path');
-const PTKDevLogger = require("@ptkdev/logger");
 
 const levels = {
     "fatal": 0,
@@ -12,16 +11,17 @@ const levels = {
 };
 
 class Logger {
-    constructor(log, verbosity = "trace") {
+    constructor(usePTKLogger = false, verbosity = "trace") {
         try {
-            this.log = log || new PTKDevLogger({});
+            this.log = usePTKLogger ? new (require("@ptkdev/logger"))({}) : console;
+
             if (this.log instanceof PTKDevLogger) {
                 this.log.warn = this.log.warning; // Alias 'warn' to 'warning'
                 this.log.success = this.log.sponsor; // Alias 'success' to 'sponsor'
             }
         } catch (error) {
             console.error("Failed to initialize PTKDevLogger, falling back to console. Reason:", error.message);
-            this.log = console;
+            this.log = console; // Fallback to console if PTKDevLogger initialization fails.
         }
         this.verbosity = levels[verbosity] !== undefined ? levels[verbosity] : levels["info"];
     }
@@ -40,11 +40,11 @@ class Logger {
 
     getCallerInfo() {
         const stack = new Error().stack.split('\n');
-        const callerLine = stack[3] || ''; // Adjusting to capture the caller
+        const callerLine = stack[3] || '';
         const match = callerLine.match(/\((.*):(\d+):\d+\)/);
         if (match) {
             const [_, fullPath, line] = match;
-            const fileName = path.basename(fullPath); // Use path.basename to get the file name
+            const fileName = path.basename(fullPath);
             return `${fileName}:${line}`;
         }
         return 'unknown location';
