@@ -33,6 +33,8 @@ class SengledApi {
         this.mqttServerURL = ""
 
         this.subscribe = {};
+        this.subscribedTopics = new Set(); // To track subscribed topics
+
         this.mqtt_client = null;
 
 
@@ -131,9 +133,8 @@ class SengledApi {
             throw e; // Re-throw the error to handle it further up the stack
         }
     
-        this.log.debug(`Response message: ${result.data.msg
-        }`);
-        this.log.debug(`Complete response object: ${result}`);
+        this.log.debug(`Response message: ${JSON.stringify(result.messageCode)}`);
+        this.log.debug(`Complete response object: ${JSON.stringify(result.data)}`);
         return result;
     }
     
@@ -448,64 +449,105 @@ class SengledApi {
     }
 
     async setBrightness(deviceUuid, brightness, wifiDevice = false) {
-        const brightnessPercentage = calculateBrightnessPercentage(brightness);
-
-        if (wifiDevice) {
-            this.log.info(`SengledApi: Wi-Fi Bulb ${deviceUuid} - Setting brightness to ${brightnessPercentage}%`);
-
-            const data = {
-                dn: deviceUuid,
-                type: 'brightness',
-                value: brightnessPercentage.toString(),
-                time: Date.now(),
-            };
-
-            const topic = `wifielement/${deviceUuid}/update`;
-            this.log.debug(`SengledApi: Wi-Fi brightness payload: ${JSON.stringify(data)}`);
-
-            const publishResult = this.publishMqtt(topic, JSON.stringify(data));
-            if (publishResult) {
-                this.log.info(`SengledApi: Brightness update published for Wi-Fi Bulb ${deviceUuid}`);
+        /** 
+         * Validate brightness range
+         * Ensure the brightness value is between 0 and 100 before proceeding.
+         */
+        if (brightness < 0 || brightness > 100) {
+            this.log.error(`SengledApi: Invalid brightness value ${brightness} for Bulb ${deviceUuid}. It must be between 0 and 100.`);
+            return; // Early exit if brightness is out of range
+        }
+    
+        // Convert brightness to percentage
+        const brightnessPercentage = this.reverseBrightnessPercentage(brightness);
+    
+        try {
+            if (wifiDevice) {
+                /** 
+                 * Handle Wi-Fi Bulb 
+                 * Log the action and prepare the MQTT payload for brightness update.
+                 */
+                this.log.info(`SengledApi: Wi-Fi Bulb ${deviceUuid} - Setting brightness to ${brightnessPercentage}%`);
+    
+                const data = {
+                    dn: deviceUuid,
+                    type: 'brightness',
+                    value: brightnessPercentage.toString(),
+                    time: Date.now(),
+                };
+    
+                const topic = `wifielement/${deviceUuid}/update`;
+                this.log.debug(`SengledApi: Wi-Fi brightness payload: ${JSON.stringify(data)}`);
+    
+                // Publish the MQTT message
+                const publishResult = await this.publishMqtt(topic, JSON.stringify(data));
+                if (publishResult) {
+                    this.log.info(`SengledApi: Brightness update published for Wi-Fi Bulb ${deviceUuid}`);
+                } else {
+                    this.log.error(`SengledApi: Failed to publish brightness update for Wi-Fi Bulb ${deviceUuid}: Publish returned false`);
+                }
             } else {
-                this.log.error(`SengledApi: Failed to publish brightness update for Wi-Fi Bulb ${deviceUuid}`);
+                /** 
+                 * Handle Zigbee Bulb 
+                 * Log the action and prepare the HTTP request payload for brightness update.
+                 */
+                this.log.info(`SengledApi: Zigbee Bulb ${deviceUuid} - Setting brightness to ${brightnessPercentage}%`);
+    
+                const url = `https://${this.countryCode}-elements.cloud.sengled.com/zigbee/device/deviceSetBrightness.json`;
+                const payload = { deviceUuid, brightness: brightnessPercentage };
+    
+                this.log.debug(`SengledApi: Zigbee brightness payload: ${JSON.stringify(payload)}`);
+    
+                // Make the HTTP request to set brightness
+                const response = await this.request(url, payload);
+    
+                if (response && response.status === 200) {
+                    this.log.info(`SengledApi: Successfully set brightness for Zigbee Bulb ${deviceUuid}`);
+                } else {
+                    this.log.error(`SengledApi: Failed to set brightness for Zigbee Bulb ${deviceUuid}: Unexpected response ${response}`);
+                }
             }
-        } else {
-            this.log.info(`SengledApi: Zigbee Bulb ${deviceUuid} - Setting brightness to ${brightnessPercentage}%`);
-
-            const url = `https://${this.countryCode}-elements.cloud.sengled.com/zigbee/device/deviceSetBrightness.json`;
-            const payload = { deviceUuid, brightness: brightnessPercentage };
-
-            this.log.debug(`SengledApi: Zigbee brightness payload: ${JSON.stringify(payload)}`);
-
-            try {
-                await this.request(url, payload);
-                this.log.info(`SengledApi: Successfully set brightness for Zigbee Bulb ${deviceUuid}`);
-            } catch (error) {
-                this.log.error(`SengledApi: Failed to set brightness for Zigbee Bulb ${deviceUuid}: ${error.message}`);
-            }
+        } catch (error) {
+            /** 
+             * Catch and log any errors that occur during the process
+             * Provide information on whether the device is Wi-Fi or Zigbee.
+             */
+            this.log.error(`SengledApi: Error in setting brightness for ${wifiDevice ? 'Wi-Fi' : 'Zigbee'} Bulb ${deviceUuid}: ${error.message}`);
         }
     }
+    
 
     async setColorTemperature(deviceUuid, colorTemperature, wifiDevice = false) {
+        // Log the input parameters
+        this.log.info(`SengledApi: setColorTemperature called with deviceUuid: ${deviceUuid}, colorTemperature: ${colorTemperature}, wifiDevice: ${wifiDevice}`);
+    
         const colorTemperaturePercentage = Math.round(
             this.translate(parseInt(colorTemperature), 200, 6500, 1, 100)
         );
-
+    
+        // Log the computed color temperature percentage
+        this.log.debug(`SengledApi: Computed colorTemperaturePercentage: ${colorTemperaturePercentage}% from input colorTemperature: ${colorTemperature}`);
+    
         if (wifiDevice) {
             this.log.info(
                 `SengledApi: Wi-Fi Color Bulb ${deviceUuid} - Setting Color Temperature to ${colorTemperaturePercentage}%`
             );
-
+    
             const dataColorTemperature = {
                 dn: deviceUuid,
                 type: 'colorTemperature',
                 value: String(colorTemperaturePercentage),
                 time: Date.now(),
             };
-
+    
+            // Log the payload being sent
             this.log.debug(`SengledApi: Wi-Fi data payload for color temperature: ${JSON.stringify(dataColorTemperature)}`);
+            
             const publishResult = this.publishMqtt(`wifielement/${deviceUuid}/update`, JSON.stringify(dataColorTemperature));
-
+    
+            // Log the result of the publish attempt
+            this.log.debug(`SengledApi: MQTT publish result for ${deviceUuid}: ${publishResult}`);
+    
             if (publishResult) {
                 this.log.info(`SengledApi: Color temperature update published for Wi-Fi device ${deviceUuid}`);
             } else {
@@ -513,16 +555,20 @@ class SengledApi {
             }
         } else {
             this.log.info(`SengledApi: Zigbee Bulb ${deviceUuid} - Setting Color Temperature to ${colorTemperaturePercentage}%`);
-
+    
             const url = `https://${this.countryCode}-elements.cloud.sengled.com/zigbee/device/deviceSetColorTemperature.json`;
             const payload = {
                 deviceUuid: deviceUuid,
                 colorTemperature: colorTemperaturePercentage,
             };
-
+    
+            // Log the constructed URL and payload
+            this.log.debug(`SengledApi: Zigbee URL: ${url}`);
             this.log.debug(`SengledApi: Zigbee payload for color temperature: ${JSON.stringify(payload)}`);
-
+    
             try {
+                // Log before making the request
+                this.log.info(`SengledApi: Sending request to set color temperature for Zigbee Bulb ${deviceUuid}`);
                 await this.request(url, payload);
                 this.log.info(`SengledApi: Successfully set color temperature for Zigbee Bulb ${deviceUuid}`);
             } catch (error) {
@@ -579,7 +625,7 @@ class SengledApi {
         }
     }
 
-    async setPower(deviceUuid, onoff, wifiDevice = true) {
+    async setPower(deviceUuid, onoff, wifiDevice = false) {
         // Set internal state based on on/off value
         this._state = onoff === '1';
         const isOn = this._state ? 'on' : 'off';
@@ -618,17 +664,6 @@ class SengledApi {
             return false;
         }
 
-        const onMessage = (topic, message) => {
-            const payload = message.toString(); // Convert message to string
-            this.log.debug(`SengledApi: Received message on topic '${topic}' with payload: ${payload}`);
-
-            if (this.subscribe[topic]) {
-                this.subscribe[topic](payload);
-            } else {
-                this.log.warn(`SengledApi: No handler subscribed for topic '${topic}'`);
-            }
-        };
-
         const clientOptions = {
             clientId: `${this.access_token}@lifeApp`,
             protocol: 'wss', // websockets
@@ -644,51 +679,53 @@ class SengledApi {
 
         try {
             this.mqtt_client = mqtt.connect(`wss://${this.mqtt_server.host}:${this.mqtt_server.port}${this.mqtt_server.path}`, clientOptions);
-
-            this.mqtt_client.on('message', onMessage);
+            this.mqtt_client.setMaxListeners(20); // Increase max listeners
 
             this.mqtt_client.on('connect', () => {
                 this.log.info('SengledApi: Successfully connected to the MQTT server');
-
-                const topicKeys = Object.keys(this.subscribe);
-
-                if (topicKeys.length === 0) {
-                    this.log.error('SengledApi: No topics to subscribe to, empty topic list.');
-                    return;
-                }
-
-                this.log.debug(`SengledApi: Subscribing to topics: ${topicKeys.join(', ')}`);
-
-                this.mqtt_client.subscribe(topicKeys, (err) => {
-                    if (err) {
-                        this.log.error('SengledApi: Failed to subscribe to topics', { error: err.message });
-                    } else {
-                        this.log.info('SengledApi: Subscribed to all topics successfully');
-                    }
-                });
+                this.subscribeToTopics();
             });
 
-            this.mqtt_client.on('error', (err) => {
-                this.log.error('SengledApi: MQTT connection error', { error: err.message });
-            });
-
-            this.mqtt_client.on('close', () => {
-                this.log.warn('SengledApi: MQTT connection closed');
-            });
-
-            this.mqtt_client.on('reconnect', () => {
-                this.log.info('SengledApi: Reconnecting to MQTT server...');
-            });
-
-            this.mqtt_client.on('offline', () => {
-                this.log.warn('SengledApi: MQTT client is offline');
-            });
+            this.mqtt_client.on('message', this.onMessage.bind(this));
+            this.mqtt_client.on('error', (err) => this.log.error('SengledApi: MQTT connection error', { error: err.message }));
+            this.mqtt_client.on('close', () => this.log.warn('SengledApi: MQTT connection closed'));
+            this.mqtt_client.on('reconnect', () => this.log.info('SengledApi: Reconnecting to MQTT server...'));
+            this.mqtt_client.on('offline', () => this.log.warn('SengledApi: MQTT client is offline'));
 
             this.log.info('SengledApi: Starting MQTT loop');
             return true;
         } catch (err) {
             this.log.error('SengledApi: Exception thrown during MQTT initialization', { error: err.message });
             return false;
+        }
+    }
+
+    subscribeToTopics() {
+        const topicKeys = Object.keys(this.subscribe);
+        if (topicKeys.length === 0) {
+            this.log.error('SengledApi: No topics to subscribe to, empty topic list.');
+            return;
+        }
+
+        this.log.debug(`SengledApi: Subscribing to topics: ${topicKeys.join(', ')}`);
+        this.mqtt_client.subscribe(topicKeys, (err) => {
+            if (err) {
+                this.log.error('SengledApi: Failed to subscribe to topics', { error: err.message });
+            } else {
+                topicKeys.forEach(topic => this.subscribedTopics.add(topic)); // Track subscribed topics
+                this.log.info('SengledApi: Subscribed to all topics successfully');
+            }
+        });
+    }
+
+    onMessage(topic, message) {
+        const payload = message.toString(); // Convert message to string
+        this.log.debug(`SengledApi: Received message on topic '${topic}' with payload: ${payload}`);
+
+        if (this.subscribe[topic]) {
+            this.subscribe[topic](payload);
+        } else {
+            this.log.warn(`SengledApi: No handler subscribed for topic '${topic}'`);
         }
     }
 
@@ -700,27 +737,7 @@ class SengledApi {
         }
 
         this.mqtt_client.end(true, () => {
-            this.mqtt_client = mqtt.connect(`wss://${this.mqtt_server.host}:${this.mqtt_server.port}`, {
-                clientId: `${this.access_token}@lifeApp`,
-                protocol: 'wss',
-                wsOptions: {
-                    path: this.mqtt_server.path,
-                    headers: {
-                        'Cookie': `JSESSIONID=${this.access_token}`
-                    }
-                }
-            });
-
-            this.mqtt_client.on('message', (topic, message) => {
-                if (this.subscribe[topic]) {
-                    this.subscribe[topic](message);
-                }
-            });
-
-            for (const topic in this.subscribe) {
-                this.subscribeMqtt(topic, this.subscribe[topic]);
-            }
-
+            this.initializeMqtt(); // Re-initialize the MQTT connection
             this.log.info("SengledApi: MQTT reinitialized");
         });
 
@@ -759,9 +776,15 @@ class SengledApi {
             this.log.error("SengledApi: MQTT client is not initialized, unable to subscribe.");
             return false;
         }
-
+    
+        // Check if already subscribed
+        if (this.subscribedTopics.has(topic)) {
+            this.log.warn(`SengledApi: Already subscribed to topic "${topic}".`);
+            return true; // Optionally, return true if already subscribed
+        }
+    
         this.log.debug(`SengledApi: Attempting to subscribe to topic "${topic}".`);
-
+    
         try {
             this.mqtt_client.subscribe(topic, (err) => {
                 if (err) {
@@ -769,9 +792,10 @@ class SengledApi {
                     return;
                 }
                 this.subscribe[topic] = callback;
+                this.subscribedTopics.add(topic); // Track the topic
                 this.log.info(`SengledApi: Successfully subscribed to topic "${topic}".`);
             });
-
+    
             this.log.debug("SengledApi: Subscribe operation initiated successfully.");
             return true;
         } catch (err) {
@@ -779,7 +803,7 @@ class SengledApi {
             return false;
         }
     }
-
+   
     unsubscribeMqtt(topic) {
         if (!this.subscribe[topic]) {
             this.log.warn(`SengledApi: No active subscription found for topic "${topic}".`);
@@ -795,6 +819,7 @@ class SengledApi {
                     return;
                 }
                 delete this.subscribe[topic];
+                this.subscribedTopics.delete(topic); // Remove from the tracked set
                 this.log.info(`SengledApi: Successfully unsubscribed from topic "${topic}".`);
             });
 
@@ -833,6 +858,10 @@ class SengledApi {
     //You can use it for different brightness values depending on your needs.
     calculateBrightnessPercentage(brightness) {
         return Math.round((brightness / 255) * 100);
+    }
+
+    reverseBrightnessPercentage(percentage) {
+        return Math.round((percentage / 100) * 255);
     }
 
     // Function to translate a value from one range to another
