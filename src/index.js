@@ -7,11 +7,13 @@ const getUuid = require("uuid-by-string");
 const path = require("path");
 const fs = require("fs").promises;
 
+const logger = require('./logger');
+
 const device_id = uuidv4().slice(0, 16)
 
 class SengledApi {
     constructor(options, log) {
-        this.log = log || console;
+        this.log = new logger(log, 'trace');
         this.persistPath = options.persistPath;
         this.apiLogEnabled = true;
 
@@ -36,7 +38,7 @@ class SengledApi {
 
         this.access_token = "";
 
-        this.log.info("Sengled Api initializing.");
+        this.log.success("Sengled Api initializing.");
     }
     getRequestData(data = {}) {
         return {
@@ -60,15 +62,13 @@ class SengledApi {
             return await this._performRequest(url, this.getRequestData(data), config);
         } catch (e) {
             this.log.error(e);
-            if (this.refresh_token) {
-                this.log.error("Error, refreshing access token and trying again");
+            this.log.error("Error, refreshing access token and trying again");
 
-                try {
-                    await this.refreshToken();
-                    return await this._performRequest(url, this.getRequestData(data), config);
-                } catch (e) {
-                    //
-                }
+            try {
+                await this.refreshToken();
+                return await this._performRequest(url, this.getRequestData(data), config);
+            } catch (e) {
+                //
             }
 
             this.log.error("Error, logging in and trying again");
@@ -86,39 +86,58 @@ class SengledApi {
             baseURL: this.apiBaseUrl,
             ...config,
         };
-
-        this.log.debug(`Performing request: ${url}`);
-
-        this.log.debug(`Request config: ${JSON.stringify(config)}`);
-
+    
+        this.log.info(`Preparing to initiate request to URL: ${url}`);
+        this.log.debug("Request configuration:", JSON.stringify(config));
+    
+        // Add timestamp logging for when the request starts
+        const startTime = Date.now();
+        this.log.debug(`Request started at: ${new Date(startTime).toISOString()}`);
+    
         let result;
-
+    
         try {
+            this.log.info(`Sending request...`);
             result = await axios(config);
-            this.log.debug(
-                `API response PerformRequest: ${JSON.stringify(result.data)}`
-            );
+    
+            const endTime = Date.now();
+            const duration = endTime - startTime;
+    
+            this.log.info(`Request to ${url} completed successfully in ${duration}ms`);
+            this.log.info(`Response status: ${result.status}`);
+            this.log.debug(`Response headers: ${Object.entries(result.headers).map(([key, value]) => `${key}: ${value}`).join(', ')}`);
+    
             if (this.dumpData) {
-                this.log.debug(
-                    `API response PerformRequest: ${JSON.stringify(result.data)}`
-                );
-                this.dumpData = false; // Only want to do this once at start-up
+                this.log.debug(`API response (dump): ${result.data}`);
+                this.dumpData = false; // Only do this once at startup
             }
+    
+            this.log.debug(`API response body: ${JSON.stringify(result.data)}`);
         } catch (e) {
-            this.log.error(`Request failed: ${e}`);
+            const endTime = Date.now();
+            const duration = endTime - startTime;
+    
+            this.log.error(`Request to ${url} failed after ${duration}ms`);
+            this.log.error(`Error message: ${e.message}`);
+    
             if (e.response) {
-                this.log.error(
-                    `Response PerformRequest (${e.response}): ${JSON.stringify(
-                        e.response.data
-                    )}`
-                );
+                this.log.error(`Response status: ${e.response.status}`);
+                this.log.error(`Response headers: ${Object.entries(e.response.headers).map(([key, value]) => `${key}: ${value}`).join(', ')}`);
+                this.log.error(`Response data: ${e.response.data}`);
+            } else {
+                this.log.error(`No response received. Error: ${e.message}`);
             }
-
-            throw e;
+    
+            throw e; // Re-throw the error to handle it further up the stack
         }
-        this.log.debug(result.data.msg);
+    
+        this.log.debug(`Response message: ${result.data.msg
+        }`);
+        this.log.debug(`Complete response object: ${result}`);
         return result;
     }
+    
+   
 
     _performLoginRequest(data = {}) {
         let url = "/v2/AuthenCross.json";
@@ -165,52 +184,56 @@ class SengledApi {
     }
 
     async maybeLogin() {
+        this.log.info("Checking login status...");
+    
         if (!this.access_token) {
+            this.log.debug("No access token found. Attempting to load persisted tokens...");
             await this._loadPersistedTokens();
         }
-
+    
         if (!this.access_token) {
-            let now = new Date().getTime();
-            // check if the last login attempt occurred too recently
+            const now = new Date().getTime();
             this.log.debug(
-                "Last login " +
-                this.lastLoginAttempt +
-                " debounce " +
-                this.loginAttemptDebounceMilliseconds +
-                " now " +
-                now
+                `Last login attempt: ${this.lastLoginAttempt}, debounce time: ${this.loginAttemptDebounceMilliseconds}, current time: ${now}`
             );
+    
             if (this.lastLoginAttempt + this.loginAttemptDebounceMilliseconds < now) {
-                // reset loginAttemptDebounceMilliseconds if last attempted login occurred more than 12 hours ago
+                this.log.info("Debounce period cleared. Attempting login...");
+    
+                // Reset debounce if last login attempt was over 12 hours ago
                 if (this.lastLoginAttempt - now > 60 * 1000 * 60 * 12) {
+                    this.log.debug("Resetting debounce time to 1 second due to long interval since last attempt.");
                     this.loginAttemptDebounceMilliseconds = 1000;
                 } else {
-                    // max debounce of 5 minutes
+                    // Double the debounce time, capped at 5 minutes
                     this.loginAttemptDebounceMilliseconds = Math.min(
                         this.loginAttemptDebounceMilliseconds * 2,
                         1000 * 60 * 5
                     );
+                    this.log.debug(`Doubling debounce time: ${this.loginAttemptDebounceMilliseconds / 1000} seconds`);
                 }
-
+    
                 this.lastLoginAttempt = now;
                 await this.login();
             } else {
                 this.log.error(
-                    "Attempting to login before debounce has cleared, waiting " +
-                    this.loginAttemptDebounceMilliseconds / 1000 +
-                    " seconds"
+                    `Login attempt blocked due to debounce period. Waiting for ${this.loginAttemptDebounceMilliseconds / 1000} seconds`
                 );
-
-                var waitTime = 0;
+    
+                let waitTime = 0;
                 while (waitTime < this.loginAttemptDebounceMilliseconds) {
-                    await this.sleep(2);
-                    waitTime = waitTime + 2000;
+                    await this.sleep(2000);
+                    waitTime += 2000;
+    
+                    // Check if login was successful during the wait
                     if (this.access_token) {
+                        this.log.info("Access token acquired during wait period.");
                         break;
                     }
                 }
-
+    
                 if (!this.access_token) {
+                    this.log.warn("Access token not acquired after wait. Attempting login again...");
                     this.lastLoginAttempt = now;
                     this.loginAttemptDebounceMilliseconds = Math.min(
                         this.loginAttemptDebounceMilliseconds * 2,
@@ -219,8 +242,11 @@ class SengledApi {
                     await this.login();
                 }
             }
+        } else {
+            this.log.info("User already logged in. Access token is present.");
         }
     }
+    
 
     async refreshToken() {
         await this.login();
@@ -403,7 +429,6 @@ class SengledApi {
         }
     }
 
-
     async findDeviceByUuid(targetUuid) {
         const devices = await this.getDeviceList();
         const matchingDevice = devices.find(device => device.deviceUuid === targetUuid);
@@ -506,7 +531,6 @@ class SengledApi {
         }
     }
 
-
     async setColor(deviceUuid, color, wifiDevice = false) {
         if (wifiDevice) {
             this.log.info(`SengledApi: Setting color for Wi-Fi device ${deviceUuid}`);
@@ -555,8 +579,7 @@ class SengledApi {
         }
     }
 
-
-    async setPower(deviceUuid, friendlyName, onoff, wifiDevice = true) {
+    async setPower(deviceUuid, onoff, wifiDevice = true) {
         // Set internal state based on on/off value
         this._state = onoff === '1';
         const isOn = this._state ? 'on' : 'off';
@@ -568,21 +591,21 @@ class SengledApi {
             time: Date.now(),
         };
 
-        const logMessage = `SengledApi: Bulb ${friendlyName} ${deviceUuid} turning ${isOn}.`;
+        const logMessage = `SengledApi: Bulb ${deviceUuid} turning ${isOn}.`;
 
         if (wifiDevice) {
             this.log.info(logMessage);
             const topic = `wifielement/${deviceUuid}/update`;
             this.publishMqtt(topic, JSON.stringify(data));
         } else {
-            this.log.info(`SengledApi: Zigbee Bulb ${friendlyName} toggling.`);
+            this.log.info(`SengledApi: Zigbee Bulb ${deviceUuid} toggling.`);
             const url = `https://${this.countryCode}-elements.cloud.sengled.com/zigbee/device/deviceSetOnOff.json`;
             const payload = { deviceUuid, onoff };
 
             try {
                 await this.request(url, payload);
             } catch (error) {
-                this.log.error(`Failed to toggle Zigbee Bulb ${friendlyName}: ${error.message}`);
+                this.log.error(`Failed to toggle Zigbee Bulb ${deviceUuid}: ${error.message}`);
             }
         }
     }
@@ -669,9 +692,6 @@ class SengledApi {
         }
     }
 
-
-
-
     reinitializeMqtt() {
         this.log.info("SengledApi: Re-initialize the MQTT connection");
 
@@ -734,7 +754,6 @@ class SengledApi {
         }
     }
 
-
     subscribeMqtt(topic, callback) {
         if (!this.mqtt_client) {
             this.log.error("SengledApi: MQTT client is not initialized, unable to subscribe.");
@@ -760,7 +779,6 @@ class SengledApi {
             return false;
         }
     }
-
 
     unsubscribeMqtt(topic) {
         if (!this.subscribe[topic]) {
@@ -788,27 +806,27 @@ class SengledApi {
         }
     }
 
-
+    //Helper Functions
     //Turn Light Bulb 0 = off or 1 = on
-    async lightPower(deviceUuid, friendlyName, value) {
-        await this.setPower(deviceUuid, friendlyName, value);
+    async lightPower(deviceUuid, value) {
+        await this.setPower(deviceUuid, value);
     }
-    async lightTurnOn(deviceUuid, friendlyName) {
-        await this.setProperty(deviceUuid, friendlyName, "0");
+    async lightTurnOn(deviceUuid) {
+        await this.setProperty(deviceUuid, "0");
     }
-    async lightTurnOff(deviceUuid, friendlyName) {
-        await this.setProperty(deviceUuid, friendlyName, "1");
+    async lightTurnOff(deviceUuid) {
+        await this.setProperty(deviceUuid, "1");
     }
 
     // Turn Light Bulb 0 = off or 1 = on
-    async wifiLightPower(deviceUuid, friendlyName, value) {
-        await this.setPower(deviceUuid, friendlyName, value, true);
+    async wifiLightPower(deviceUuid, value) {
+        await this.setPower(deviceUuid, value, true);
     }
-    async wifiLightTurnOn(deviceUuid, friendlyName) {
-        await this.setProperty(deviceUuid, friendlyName, "0", true);
+    async wifiLightTurnOn(deviceUuid) {
+        await this.setProperty(deviceUuid, "0", true);
     }
-    async wifiLightTurnOff(deviceUuid, friendlyName) {
-        await this.setProperty(deviceUuid, friendlyName, "1", true);
+    async wifiLightTurnOff(deviceUuid) {
+        await this.setProperty(deviceUuid, "1", true);
     }
 
     //This function takes a brightness value (between 0 and 255) as input and returns the brightness percentage (between 0% and 100%). 

@@ -5,14 +5,16 @@
     "homepage": "https://github.com/jfarmer08/sengled-api",
     "main": "./src/index.js",
     "scripts": {
-        "test": "echo \"Error: no test specified\" && exit 1"
+        "test": "mocha --timeout 10000"
     },
     "keywords": [
-        "sengled","smartlights"
+        "sengled",
+        "smartlights"
     ],
     "author": "Allen Farmer",
     "license": "MIT",
     "dependencies": {
+        "@ptkdev/logger": "1.8.0",
         "axios": "1.7.7",
         "mqtt": "5.10.1",
         "uuid": "10.0.0",
@@ -38,5 +40,12 @@
     },
     "bugs": {
         "url": "https://github.com/jfarmer08/sengled-api/issues"
+    },
+    "devDependencies": {
+        "axios-mock-adapter": "^2.0.0",
+        "chai": "^4.3.6",
+        "mocha": "^10.7.3",
+        "sinon": "^19.0.2",
+        "sinon-chai": "^4.0.0"
     }
 }
