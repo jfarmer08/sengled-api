@@ -1,6 +1,6 @@
 {
     "name": "sengled-api",
-    "version": "1.0.1",
+    "version": "1.0.2",
     "description": "An unoficial API wrapper for Sengled.",
     "homepage": "https://github.com/jfarmer08/sengled-api",
     "main": "./src/index.js",
