@@ -12,8 +12,8 @@ const logger = require('./logger');
 const device_id = uuidv4().slice(0, 16)
 
 class SengledApi {
-    constructor(options, log) {
-        this.log = new logger(log, 'trace');
+    constructor(options, log, level) {
+        this.log = new logger(log, level);
         this.persistPath = options.persistPath;
         this.apiLogEnabled = true;
 

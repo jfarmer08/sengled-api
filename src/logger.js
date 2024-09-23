@@ -1,5 +1,13 @@
 const path = require('path');
 
+let PTKDevLogger;
+try {
+    PTKDevLogger = require("@ptkdev/logger");
+    console.log("PTKDevLogger loaded successfully.");
+} catch (error) {
+    console.warn("PTKDevLogger not found, falling back to console.");
+}
+
 const levels = {
     "fatal": 0,
     "error": 1,
@@ -11,18 +19,8 @@ const levels = {
 };
 
 class Logger {
-    constructor(usePTKLogger = false, verbosity = "trace") {
-        try {
-            this.log = usePTKLogger ? new (require("@ptkdev/logger"))({}) : console;
-
-            if (this.log instanceof PTKDevLogger) {
-                this.log.warn = this.log.warning; // Alias 'warn' to 'warning'
-                this.log.success = this.log.sponsor; // Alias 'success' to 'sponsor'
-            }
-        } catch (error) {
-            console.error("Failed to initialize PTKDevLogger, falling back to console. Reason:", error.message);
-            this.log = console; // Fallback to console if PTKDevLogger initialization fails.
-        }
+    constructor(log, verbosity = "trace") {
+        this.log = log || (PTKDevLogger ? new PTKDevLogger({}) : console);
         this.verbosity = levels[verbosity] !== undefined ? levels[verbosity] : levels["info"];
     }
 
@@ -45,7 +43,10 @@ class Logger {
         if (match) {
             const [_, fullPath, line] = match;
             const fileName = path.basename(fullPath);
-            return `${fileName}:${line}`;
+            // Only return fileName if it's 'index.js'
+            if (fileName === 'index.js') {
+                return `${fileName}:${line}`;
+            }
         }
         return 'unknown location';
     }
@@ -102,8 +103,8 @@ class Logger {
         if (this.isLevelEnabled("error")) {
             const callerInfo = this.getCallerInfo();
             const logMessage = tag ? `${tag}: ${message} (called from ${callerInfo})` : `${message} (called from ${callerInfo})`;
-            const formattedMessage = stringify && typeof message === 'object' 
-                ? JSON.stringify(message, null, 2) 
+            const formattedMessage = stringify && typeof message === 'object'
+                ? JSON.stringify(message, null, 2)
                 : logMessage;
 
             if (typeof this.log.error === 'function') {
